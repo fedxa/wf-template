@@ -283,7 +283,7 @@ workflow {
         decorate_samples = samples
             .map {meta, fname, stats ->
                 [meta["group_key"], meta, fname, stats]}
-            .groupTuple().
+            .groupTuple()
             .map { key, metas, fnames, statss ->
                 if (fnames[0] == null) {fnames = null}
                 // put all the group_indexes into a single list for safe keeping (mainly testing)
