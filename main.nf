@@ -92,6 +92,23 @@ process publish {
     """
 }
 
+process my_publish {
+    // publish inputs to output directory
+    label "wftemplate"
+    publishDir (
+        params.out_dir,
+        mode: "copy",
+        saveAs: { dirname ? "$dirname/$fname" : fname }
+    )
+    input:
+        tuple path(fname), val(dirname)
+    output:
+        path fname
+    """
+    echo "Writing output files"
+    """
+}
+
 // Creates a new directory named after the sample alias and moves the ingress results
 // into it.
 process collectIngressResultsInDir {
@@ -117,6 +134,34 @@ process collectIngressResultsInDir {
     mkdir -p $outdir
     echo '$metaJson' > metamap.json
     mv metamap.json $reads $stats $index $outdir
+    """
+}
+
+
+// Creates a new directory named after the sample alias and moves the ingress results
+// into it.
+process my_analysis {
+    label "wftemplate"
+    input:
+        // both inputs might be `OPTIONAL_FILE` --> stage in different sub-directories
+        // to avoid name collisions
+        tuple val(meta),
+            path(reads, stageAs: "reads/*"),
+            path(index, stageAs: "index/*"),
+            path(stats, stageAs: "stats/*")
+    output:
+        // use sub-dir to avoid name clashes (in the unlikely event of a sample alias
+        // being `reads` or `stats`)
+        path "out_my/*"
+    script:
+    String outdir = "out_my/${meta["alias"]}"
+    String metaJson = new JsonBuilder(meta).toPrettyString()
+    String reads = reads.fileName.name == OPTIONAL_FILE.name ? "" : reads
+    String index = index.fileName.name == OPTIONAL_FILE.name ? "" : index
+    String stats = stats.fileName.name == OPTIONAL_FILE.name ? "" : stats
+    """
+    mkdir -p $outdir
+    zcat $reads |wc -l >$outdir/joined_fastq_lines.txt
     """
 }
 
@@ -167,8 +212,17 @@ workflow pipeline {
             [ meta, path ?: OPTIONAL_FILE, index ?: OPTIONAL_FILE, stats ?: OPTIONAL_FILE ]
         }
         | collectIngressResultsInDir
-    emit:
+
+        // replace `null` with path to optional file
+        reads
+        | map {
+            meta, path, index, stats ->
+            [ meta, path ?: OPTIONAL_FILE, index ?: OPTIONAL_FILE, stats ?: OPTIONAL_FILE ]
+        }
+        | my_analysis
+emit:
         ingress_results = collectIngressResultsInDir.out
+        my_results = my_analysis.out
         report
         // TODO: use something more useful as telemetry
         telemetry = workflow_params
@@ -229,7 +283,7 @@ workflow {
         decorate_samples = samples
             .map {meta, fname, stats ->
                 [meta["group_key"], meta, fname, stats]}
-            .groupTuple()
+            .groupTuple().
             .map { key, metas, fnames, statss ->
                 if (fnames[0] == null) {fnames = null}
                 // put all the group_indexes into a single list for safe keeping (mainly testing)
@@ -244,8 +298,11 @@ workflow {
     pipeline(decorate_samples)
     ch_to_publish = pipeline.out.ingress_results
         | map { [it, "${params.fastq ? "fastq" : "xam"}_ingress_results"] }
+    ch_to_publish2 = pipeline.out.my_results
+        | map { [it, "${params.fastq ? "fastq" : "xam"}_ingress_results_my"] }
 
     ch_to_publish | publish
+    ch_to_publish2 | my_publish
 }
 
 workflow.onComplete {
